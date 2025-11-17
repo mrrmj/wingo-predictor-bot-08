@@ -13,10 +13,10 @@ import requests
 # ==========================
 
 # 👉 PUT YOUR REAL VALUES HERE LOCALLY (do NOT share publicly)
-TELEGRAM_BOT_TOKEN = "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE"
-TELEGRAM_CHAT_ID   = "PUT_YOUR_TELEGRAM_CHAT_ID_HERE"
+TELEGRAM_BOT_TOKEN = "8318489254:AAFAFXu5fg69QVSIIrPhXmhueXCCFpEETko"
+TELEGRAM_CHAT_ID   = "7026907835"  # keep as string
 
-# Game API endpoints (based on your fetcher)
+# Game API endpoints
 GAME_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_1M.json?"
 HISTORY_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json?"
 
@@ -49,6 +49,20 @@ L_ACCURACY = {
 # Poll interval in seconds
 POLL_INTERVAL = 5
 
+# ==========================
+# GLOBAL STATS (for /stats)
+# ==========================
+
+TOTAL_PREDS = 0
+TOTAL_HITS = 0
+STATS_BY_L = {L: {"total": 0, "hits": 0} for L in range(14, 20)}
+
+CURRENT_DAY = None     # 'YYYY-MM-DD'
+PREDS_DAY = 0
+HITS_DAY = 0
+
+LAST_UPDATE_ID = None  # for Telegram getUpdates offset
+
 
 # ==========================
 # TELEGRAM – RAW API
@@ -71,6 +85,69 @@ def tg_send_message(text: str):
             print("[Telegram] Error:", resp.text)
     except Exception as e:
         print("[Telegram] Exception:", e)
+
+
+def poll_telegram_updates_and_handle_stats():
+    """
+    Poll Telegram updates and respond to /stats command from TELEGRAM_CHAT_ID.
+    Uses raw getUpdates and a global LAST_UPDATE_ID.
+    """
+    global LAST_UPDATE_ID, TOTAL_PREDS, TOTAL_HITS, CURRENT_DAY, PREDS_DAY, HITS_DAY, STATS_BY_L
+
+    if TELEGRAM_BOT_TOKEN == "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE":
+        return  # not configured
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    params = {}
+    if LAST_UPDATE_ID is not None:
+        params["offset"] = LAST_UPDATE_ID + 1
+    try:
+        resp = requests.get(url, params=params, timeout=3)
+        if not resp.ok:
+            return
+        data = resp.json()
+        results = data.get("result", [])
+        for upd in results:
+            LAST_UPDATE_ID = upd.get("update_id", LAST_UPDATE_ID)
+            msg = upd.get("message") or upd.get("edited_message")
+            if not msg:
+                continue
+            chat = msg.get("chat", {})
+            chat_id = str(chat.get("id", ""))
+            if chat_id != str(TELEGRAM_CHAT_ID):
+                continue
+            text = msg.get("text", "") or ""
+            if text.strip().lower().startswith("/stats"):
+                # Build stats reply
+                if TOTAL_PREDS > 0:
+                    overall_acc = round(100 * TOTAL_HITS / TOTAL_PREDS, 2)
+                else:
+                    overall_acc = 0.0
+                if PREDS_DAY > 0:
+                    day_acc = round(100 * HITS_DAY / PREDS_DAY, 2)
+                else:
+                    day_acc = 0.0
+
+                lines = []
+                lines.append("📊 *Forecast Stats*")
+                lines.append(f"Date: `{CURRENT_DAY or 'N/A'}`")
+                lines.append("")
+                lines.append(f"Today: *{day_acc}%*  ({HITS_DAY}/{PREDS_DAY})")
+                lines.append(f"Total (since start): *{overall_acc}%*  ({TOTAL_HITS}/{TOTAL_PREDS})")
+                lines.append("")
+                lines.append("*By Length L (total/hits/acc%)*")
+                for L in range(14, 20):
+                    t = STATS_BY_L[L]["total"]
+                    h = STATS_BY_L[L]["hits"]
+                    if t > 0:
+                        accL = round(100 * h / t, 2)
+                    else:
+                        accL = 0.0
+                    lines.append(f"L={L}: {h}/{t}  → {accL}%")
+                tg_send_message("\n".join(lines))
+    except Exception:
+        # swallow any polling errors silently, not critical
+        return
 
 
 # ==========================
@@ -145,7 +222,7 @@ def get_last_issue_number() -> Optional[str]:
 
 
 # ==========================
-# FETCHER (BASED ON YOUR LOGIC)
+# FETCHER (HISTORY ENDPOINT)
 # ==========================
 
 def fetch_new_rounds_from_server(last_issue: Optional[str]) -> List[Tuple[str, int, str, str, str]]:
@@ -276,10 +353,13 @@ def estimate_confidence(L: int, k_lock: int) -> float:
 
 
 # ==========================
-# MAIN LOOP WITH LIVE ACCURACY TRACKING
+# MAIN LOOP WITH DAY + TOTAL ACCURACY
 # ==========================
 
 def main():
+    global TOTAL_PREDS, TOTAL_HITS, STATS_BY_L
+    global CURRENT_DAY, PREDS_DAY, HITS_DAY
+
     if TELEGRAM_BOT_TOKEN == "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("⚠️ Please edit TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the script before running.")
         return
@@ -298,14 +378,11 @@ def main():
     print(f"📜 Loaded {len(history)} historical rounds.")
     print(f"🆔 Last known issue: {last_issue}")
 
-    total_preds = 0
-    total_hits = 0
-    stats_by_L = {L: {"total": 0, "hits": 0} for L in range(14, 20)}
-
     pending_pred = None  # {"pred": 'B'/'S', "L":L, "k":k}
 
     while True:
         try:
+            # 1) Fetch new rounds
             new_rows = fetch_new_rounds_from_server(last_issue)
             if new_rows:
                 insert_rounds(new_rows)
@@ -314,47 +391,65 @@ def main():
                 for issue, num, color, cat, ts in new_rows:
                     bs = "B" if num >= 5 else "S"
 
-                    # 1) Evaluate previous prediction, if any
+                    # --- determine day string ---
+                    day_str = ts.split(" ")[0] if " " in ts else ts
+
+                    # --- detect new day and reset daily stats ---
+                    if CURRENT_DAY is None:
+                        CURRENT_DAY = day_str
+                    elif day_str != CURRENT_DAY:
+                        CURRENT_DAY = day_str
+                        PREDS_DAY = 0
+                        HITS_DAY = 0
+
+                    # 2) Evaluate previous prediction (if any)
                     if pending_pred is not None:
-                        total_preds += 1
+                        TOTAL_PREDS += 1
+                        PREDS_DAY += 1
+
                         Lp = pending_pred["L"]
-                        stats_by_L[Lp]["total"] += 1
+                        STATS_BY_L[Lp]["total"] += 1
 
                         if bs == pending_pred["pred"]:
-                            total_hits += 1
-                            stats_by_L[Lp]["hits"] += 1
+                            TOTAL_HITS += 1
+                            HITS_DAY += 1
                             outcome = "✅ HIT"
                         else:
                             outcome = "❌ MISS"
 
-                        overall_acc = round(100 * total_hits / total_preds, 2)
+                        overall_acc = round(100 * TOTAL_HITS / TOTAL_PREDS, 2)
+                        day_acc = round(100 * HITS_DAY / PREDS_DAY, 2) if PREDS_DAY > 0 else 0.0
+
                         L_acc = 0.0
-                        if stats_by_L[Lp]["total"] > 0:
+                        if STATS_BY_L[Lp]["total"] > 0:
                             L_acc = round(
-                                100 * stats_by_L[Lp]["hits"] / stats_by_L[Lp]["total"], 2
+                                100 * STATS_BY_L[Lp]["hits"] / STATS_BY_L[Lp]["total"], 2
                             )
 
                         result_msg = (
                             f"{outcome}\n"
                             f"Issue: `{issue}`\n"
+                            f"Date: `{CURRENT_DAY}`\n"
                             f"Actual: `{bs}`  | Predicted: `{pending_pred['pred']}`\n"
                             f"Length L={Lp}, k={pending_pred['k']}\n\n"
-                            f"Running accuracy (all): *{overall_acc}%*  "
-                            f"({total_hits}/{total_preds})\n"
+                            f"Today accuracy: *{day_acc}%*  "
+                            f"({HITS_DAY}/{PREDS_DAY})\n"
+                            f"Total accuracy (since start): *{overall_acc}%*  "
+                            f"({TOTAL_HITS}/{TOTAL_PREDS})\n"
                             f"Accuracy for L={Lp}: *{L_acc}%* "
-                            f"({stats_by_L[Lp]['hits']}/{stats_by_L[Lp]['total']})"
+                            f"({STATS_BY_L[Lp]['hits']}/{STATS_BY_L[Lp]['total']})"
                         )
                         print("[RESULT]", result_msg.replace("\n", " | "))
                         tg_send_message(result_msg)
 
                         pending_pred = None
 
-                    # 2) Append current round
+                    # 3) Append current round to history
                     history.append(bs)
                     if len(history) < 13:
                         continue
 
-                    # 3) Try new lock-in prediction for NEXT round
+                    # 4) Try new lock-in prediction for NEXT round
                     pred, L, k = predictor.predict_next(history)
                     if pred is None:
                         continue  # no lock-in → no signal
@@ -362,22 +457,29 @@ def main():
                     conf = estimate_confidence(L, k)
                     pending_pred = {"pred": pred, "L": L, "k": k}
 
-                    current_overall = round(100 * total_hits / total_preds, 2) if total_preds > 0 else 0.0
+                    overall_acc_now = round(100 * TOTAL_HITS / TOTAL_PREDS, 2) if TOTAL_PREDS > 0 else 0.0
+                    day_acc_now = round(100 * HITS_DAY / PREDS_DAY, 2) if PREDS_DAY > 0 else 0.0
+
                     signal_msg = (
                         "📢 *Prediction Signal*\n"
                         f"Latest issue: `{issue}`\n"
-                        f"Time: `{ts}`\n\n"
+                        f"Time: `{ts}`\n"
+                        f"Date: `{CURRENT_DAY}`\n\n"
                         f"👉 *Bet on next round*: `{pred}`  (B=Big, S=Small)\n"
                         f"Pattern length: *{L}*\n"
                         f"k_lock: *{k}*\n"
                         f"Est. confidence: *{conf}%*\n\n"
-                        f"Current running accuracy (all): *{current_overall}%*"
+                        f"Today accuracy (so far): *{day_acc_now}%*\n"
+                        f"Total accuracy (since start): *{overall_acc_now}%*"
                     )
                     print("[SIGNAL]", signal_msg.replace("\n", " | "))
                     tg_send_message(signal_msg)
 
             else:
                 print("🔁 No new rounds fetched...")
+
+            # 5) Poll Telegram for /stats command
+            poll_telegram_updates_and_handle_stats()
 
         except KeyboardInterrupt:
             print("\n🛑 Stopped by user.")
