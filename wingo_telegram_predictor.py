@@ -70,7 +70,7 @@ LAST_UPDATE_ID = None  # for Telegram getUpdates offset
 
 def tg_send_message(text: str):
     """Send a Telegram message - PLAIN TEXT ONLY (no formatting issues)"""
-    if TELEGRAM_BOT_TOKEN == "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE":
+    if TELEGRAM_BOT_TOKEN == "8237694201:AAGCy8nfrz9g6IKh0VrOLt1SC6bdR_dY7kM":
         print("[WARN] Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the script.")
         return
     
