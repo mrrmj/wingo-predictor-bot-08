@@ -69,47 +69,26 @@ LAST_UPDATE_ID = None  # for Telegram getUpdates offset
 # ==========================
 
 def tg_send_message(text: str):
-    """Send a Telegram message - PLAIN TEXT ONLY (no formatting issues)"""
+    """Send a Telegram message using raw Bot API."""
     if TELEGRAM_BOT_TOKEN == "8237694201:AAGCy8nfrz9g6IKh0VrOLt1SC6bdR_dY7kM":
         print("[WARN] Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the script.")
         return
     
-    # REMOVE ALL FORMATTING CHARACTERS COMPLETELY
-    clean_text = text
-    # Remove ALL markdown/HTML formatting characters
-    formatting_chars = ['*', '_', '`', '~', '[', ']', '(', ')', '#', '+', '-', '=', '|', '{', '}', '.', '!', '>']
-    for char in formatting_chars:
-        clean_text = clean_text.replace(char, '')
-    
-    # Also replace markdown entities with plain equivalents
-    clean_text = clean_text.replace('📢', 'ALERT:')
-    clean_text = clean_text.replace('👉', '->')
-    clean_text = clean_text.replace('📊', 'STATS:')
-    clean_text = clean_text.replace('✅', '[OK]')
-    clean_text = clean_text.replace('❌', '[FAIL]')
+    # REMOVE ALL MARKDOWN FORMATTING
+    plain_text = text.replace('*', '').replace('_', '').replace('`', '')
     
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": clean_text,
-        "parse_mode": None  # NO FORMATTING AT ALL
+        "text": plain_text,
+        "parse_mode": None  # NO FORMATTING
     }
-    
     try:
         resp = requests.post(url, data=data, timeout=10)
         if not resp.ok:
-            # If still failing, try the most basic possible request
-            print(f"[Telegram Raw Error] Status: {resp.status_code}, Body: {resp.text}")
-            
-            # SUPER BASIC FALLBACK - just send "Bot update" if everything fails
-            backup_data = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": "Bot update received"
-            }
-            requests.post(url, data=backup_data, timeout=5)
-            
+            print("[Telegram] Error:", resp.text)
     except Exception as e:
-        print(f"[Telegram] Connection error: {e}")
+        print("[Telegram] Exception:", e)
 
 
 def poll_telegram_updates_and_handle_stats():
