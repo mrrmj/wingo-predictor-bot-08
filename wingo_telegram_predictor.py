@@ -13,8 +13,8 @@ import requests
 # ==========================
 
 # 👉 PUT YOUR REAL VALUES HERE LOCALLY (do NOT share publicly)
-TELEGRAM_BOT_TOKEN = "8318489254:AAFAFXu5fg69QVSIIrPhXmhueXCCFpEETko"
-TELEGRAM_CHAT_ID   = "7026907835"  # keep as string
+TELEGRAM_BOT_TOKEN = "8237694201:AAGCy8nfrz9g6IKh0VrOLt1SC6bdR_dY7kM"
+TELEGRAM_CHAT_ID   = "7284648472"  # keep as string
 
 # Game API endpoints
 GAME_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_1M.json?"
