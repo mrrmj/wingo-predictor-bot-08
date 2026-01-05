@@ -69,22 +69,43 @@ LAST_UPDATE_ID = 0  # FIXED: Start from 0 instead of None
 # ==========================
 
 def tg_send_message(text: str):
-    """Send a Telegram message using raw Bot API."""
+    """Send a Telegram message with automatic format fallback."""
     if TELEGRAM_BOT_TOKEN == "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("[WARN] Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the script.")
         return
+    
+    # First try MarkdownV2
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    
+    # Method 1: MarkdownV2 (escaped)
+    md2_text = text
+    for char in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        md2_text = md2_text.replace(char, f'\\{char}')
+    
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "Markdown"
+        "text": md2_text,
+        "parse_mode": "MarkdownV2"
     }
-    try:
-        resp = requests.post(url, data=data, timeout=10)
-        if not resp.ok:
-            print("[Telegram] Error:", resp.text)
-    except Exception as e:
-        print("[Telegram] Exception:", e)
+    
+    resp = requests.post(url, data=data, timeout=10)
+    if resp.ok:
+        return
+    
+    # Method 2: HTML (if MarkdownV2 fails)
+    html_text = text.replace('*', '<b>').replace('</b>', '</b>').replace('`', '<code>')
+    data["parse_mode"] = "HTML"
+    data["text"] = html_text
+    resp = requests.post(url, data=data, timeout=10)
+    
+    if resp.ok:
+        return
+    
+    # Method 3: Plain text (ultimate fallback)
+    plain_text = text.replace('*', '').replace('_', '').replace('`', '')
+    data["parse_mode"] = None
+    data["text"] = plain_text
+    requests.post(url, data=data, timeout=10)
 
 
 def poll_telegram_updates_and_handle_stats():
