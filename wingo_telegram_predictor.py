@@ -61,7 +61,7 @@ CURRENT_DAY = None     # 'YYYY-MM-DD'
 PREDS_DAY = 0
 HITS_DAY = 0
 
-LAST_UPDATE_ID = 0  # FIXED: Start from 0 instead of None
+LAST_UPDATE_ID = None  # for Telegram getUpdates offset
 
 
 # ==========================
@@ -69,43 +69,47 @@ LAST_UPDATE_ID = 0  # FIXED: Start from 0 instead of None
 # ==========================
 
 def tg_send_message(text: str):
-    """Send a Telegram message with automatic format fallback."""
+    """Send a Telegram message - PLAIN TEXT ONLY (no formatting issues)"""
     if TELEGRAM_BOT_TOKEN == "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("[WARN] Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in the script.")
         return
     
-    # First try MarkdownV2
+    # REMOVE ALL FORMATTING CHARACTERS COMPLETELY
+    clean_text = text
+    # Remove ALL markdown/HTML formatting characters
+    formatting_chars = ['*', '_', '`', '~', '[', ']', '(', ')', '#', '+', '-', '=', '|', '{', '}', '.', '!', '>']
+    for char in formatting_chars:
+        clean_text = clean_text.replace(char, '')
+    
+    # Also replace markdown entities with plain equivalents
+    clean_text = clean_text.replace('📢', 'ALERT:')
+    clean_text = clean_text.replace('👉', '->')
+    clean_text = clean_text.replace('📊', 'STATS:')
+    clean_text = clean_text.replace('✅', '[OK]')
+    clean_text = clean_text.replace('❌', '[FAIL]')
+    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    
-    # Method 1: MarkdownV2 (escaped)
-    md2_text = text
-    for char in ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
-        md2_text = md2_text.replace(char, f'\\{char}')
-    
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": md2_text,
-        "parse_mode": "MarkdownV2"
+        "text": clean_text,
+        "parse_mode": None  # NO FORMATTING AT ALL
     }
     
-    resp = requests.post(url, data=data, timeout=10)
-    if resp.ok:
-        return
-    
-    # Method 2: HTML (if MarkdownV2 fails)
-    html_text = text.replace('*', '<b>').replace('</b>', '</b>').replace('`', '<code>')
-    data["parse_mode"] = "HTML"
-    data["text"] = html_text
-    resp = requests.post(url, data=data, timeout=10)
-    
-    if resp.ok:
-        return
-    
-    # Method 3: Plain text (ultimate fallback)
-    plain_text = text.replace('*', '').replace('_', '').replace('`', '')
-    data["parse_mode"] = None
-    data["text"] = plain_text
-    requests.post(url, data=data, timeout=10)
+    try:
+        resp = requests.post(url, data=data, timeout=10)
+        if not resp.ok:
+            # If still failing, try the most basic possible request
+            print(f"[Telegram Raw Error] Status: {resp.status_code}, Body: {resp.text}")
+            
+            # SUPER BASIC FALLBACK - just send "Bot update" if everything fails
+            backup_data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": "Bot update received"
+            }
+            requests.post(url, data=backup_data, timeout=5)
+            
+    except Exception as e:
+        print(f"[Telegram] Connection error: {e}")
 
 
 def poll_telegram_updates_and_handle_stats():
@@ -119,36 +123,24 @@ def poll_telegram_updates_and_handle_stats():
         return  # not configured
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
-    params = {"timeout": 30}  # Added timeout for long polling
-    if LAST_UPDATE_ID > 0:
+    params = {}
+    if LAST_UPDATE_ID is not None:
         params["offset"] = LAST_UPDATE_ID + 1
-    
     try:
-        resp = requests.get(url, params=params, timeout=35)
+        resp = requests.get(url, params=params, timeout=3)
         if not resp.ok:
-            print(f"[Telegram] HTTP error: {resp.status_code}")
             return
         data = resp.json()
-        if not data.get("ok"):
-            print(f"[Telegram] API error: {data}")
-            return
-            
         results = data.get("result", [])
-        
         for upd in results:
-            current_update_id = upd.get("update_id", 0)
-            if current_update_id > LAST_UPDATE_ID:
-                LAST_UPDATE_ID = current_update_id
-            
+            LAST_UPDATE_ID = upd.get("update_id", LAST_UPDATE_ID)
             msg = upd.get("message") or upd.get("edited_message")
             if not msg:
                 continue
-                
             chat = msg.get("chat", {})
             chat_id = str(chat.get("id", ""))
             if chat_id != str(TELEGRAM_CHAT_ID):
                 continue
-                
             text = msg.get("text", "") or ""
             if text.strip().lower().startswith("/stats"):
                 # Build stats reply
@@ -178,13 +170,9 @@ def poll_telegram_updates_and_handle_stats():
                         accL = 0.0
                     lines.append(f"L={L}: {h}/{t}  → {accL}%")
                 tg_send_message("\n".join(lines))
-                print(f"[Telegram] Responded to /stats from {chat_id}")
-                
-    except requests.exceptions.Timeout:
-        # Long polling timeout is normal
-        pass
-    except Exception as e:
-        print(f"[Telegram] Polling exception: {e}")
+    except Exception:
+        # swallow any polling errors silently, not critical
+        return
 
 
 # ==========================
@@ -277,7 +265,7 @@ def fetch_new_rounds_from_server(last_issue: Optional[str]) -> List[Tuple[str, i
         }
         resp = requests.get(HISTORY_URL, params=params, timeout=10)
         if not resp.ok:
-            print("[Fetcher] HTTP error:", resp.status_code, resp.text[:100])
+            print("[Fetcher] HTTP error:", resp.status_code, resp.text)
             return rows
 
         data = resp.json()
@@ -414,16 +402,12 @@ def main():
 
     print(f"📜 Loaded {len(history)} historical rounds.")
     print(f"🆔 Last known issue: {last_issue}")
-    print(f"🤖 Bot is starting. Send /stats to chat ID: {TELEGRAM_CHAT_ID}")
 
     pending_pred = None  # {"pred": 'B'/'S', "L":L, "k":k}
 
     while True:
         try:
-            # 1) Poll Telegram for /stats command FIRST
-            poll_telegram_updates_and_handle_stats()
-            
-            # 2) Fetch new rounds
+            # 1) Fetch new rounds
             new_rows = fetch_new_rounds_from_server(last_issue)
             if new_rows:
                 insert_rounds(new_rows)
@@ -443,7 +427,7 @@ def main():
                         PREDS_DAY = 0
                         HITS_DAY = 0
 
-                    # 3) Evaluate previous prediction (if any)
+                    # 2) Evaluate previous prediction (if any)
                     if pending_pred is not None:
                         TOTAL_PREDS += 1
                         PREDS_DAY += 1
@@ -485,12 +469,12 @@ def main():
 
                         pending_pred = None
 
-                    # 4) Append current round to history
+                    # 3) Append current round to history
                     history.append(bs)
                     if len(history) < 13:
                         continue
 
-                    # 5) Try new lock-in prediction for NEXT round
+                    # 4) Try new lock-in prediction for NEXT round
                     pred, L, k = predictor.predict_next(history)
                     if pred is None:
                         continue  # no lock-in → no signal
@@ -518,6 +502,9 @@ def main():
 
             else:
                 print("🔁 No new rounds fetched...")
+
+            # 5) Poll Telegram for /stats command
+            poll_telegram_updates_and_handle_stats()
 
         except KeyboardInterrupt:
             print("\n🛑 Stopped by user.")
